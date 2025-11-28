@@ -10,6 +10,7 @@ from model import GeleNet
 
 # ----------------------------
 # Hugging Face helper (downloads model files from HF repo; supports private repos via HF_TOKEN)
+# compatible with different huggingface_hub versions
 # ----------------------------
 from huggingface_hub import hf_hub_download
 
@@ -21,6 +22,30 @@ HF_MODEL_FILES = {
     "GeleNet_ORSSD.pth": "GeleNet_ORSSD.pth",
     "GeleNet_EORSSD.pth": "GeleNet_EORSSD.pth"
 }
+
+def _hf_download_with_compat(repo_id, filename, token, cache_dir="hf_cache", force_download=False):
+    """
+    Call hf_hub_download with a token in a backward/forward compatible way.
+    Tries both 'token=' and 'use_auth_token=' argument names.
+    """
+    # Try token=None first (for public) or with provided token; handle different API versions
+    kwargs = dict(repo_id=repo_id, filename=filename, cache_dir=cache_dir, force_download=force_download)
+    # Try the modern 'token' arg first (newer versions)
+    try:
+        if token is not None:
+            return hf_hub_download(**kwargs, token=token)
+        else:
+            return hf_hub_download(**kwargs)
+    except TypeError as e_token:
+        # try legacy 'use_auth_token' fallback
+        try:
+            if token is not None:
+                return hf_hub_download(**kwargs, use_auth_token=token)
+            else:
+                return hf_hub_download(**kwargs)
+        except Exception as e2:
+            # raise the original / second exception for caller to display
+            raise e2
 
 def get_model_file_from_hf(filename: str):
     """
@@ -42,10 +67,10 @@ def get_model_file_from_hf(filename: str):
     token = st.secrets.get("HF_TOKEN", None)
 
     try:
-        local_hf_path = hf_hub_download(
+        local_hf_path = _hf_download_with_compat(
             repo_id=HF_REPO,
             filename=hf_filename,
-            use_auth_token=token,
+            token=token,
             cache_dir="hf_cache",
             force_download=False
         )
