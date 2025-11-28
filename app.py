@@ -9,11 +9,11 @@ import torchvision.transforms as T
 from model import GeleNet
 
 # ----------------------------
-# Hugging Face helper (downloads model files from a public HF repo)
+# Hugging Face helper (downloads model files from HF repo; supports private repos via HF_TOKEN)
 # ----------------------------
 from huggingface_hub import hf_hub_download
 
-# Replace this with your public HF repo id (e.g. "SATYA-SAI-55/gele-net-models")
+# <-- SET THIS to your HF repo id (case-sensitive)
 HF_REPO = "Satya55555/satya-gele-models"
 
 # Map the filenames users select to files stored in the HF repo
@@ -24,7 +24,8 @@ HF_MODEL_FILES = {
 
 def get_model_file_from_hf(filename: str):
     """
-    Ensure `filename` exists locally. If not, download it from the HF repo (public).
+    Ensure `filename` exists locally. If not, download it from the HF repo.
+    Uses st.secrets['HF_TOKEN'] if present (for private/gated repos).
     Returns local filename or None on failure.
     """
     if os.path.exists(filename):
@@ -35,11 +36,16 @@ def get_model_file_from_hf(filename: str):
         return None
 
     hf_filename = HF_MODEL_FILES[filename]
-    st.info(f"Downloading {hf_filename} from Hugging Face repo {HF_REPO} ...")
+    st.info(f"Ensuring model {hf_filename} is available (HF repo: {HF_REPO}) ...")
+
+    # Read token from Streamlit secrets (works on Streamlit Cloud) or None for public repos
+    token = st.secrets.get("HF_TOKEN", None)
+
     try:
         local_hf_path = hf_hub_download(
             repo_id=HF_REPO,
             filename=hf_filename,
+            use_auth_token=token,
             cache_dir="hf_cache",
             force_download=False
         )
@@ -48,13 +54,16 @@ def get_model_file_from_hf(filename: str):
         return None
 
     try:
-        # Move/copy from HF cache to working directory with expected filename
-        # Use replace to overwrite any existing file
+        # Move HF cache file to working dir with expected filename (atomic replace)
         os.replace(local_hf_path, filename)
     except Exception:
-        # If replace fails (e.g., cross-device), fallback to copy
+        # Fallback copy if replace fails (cross-device)
         import shutil
-        shutil.copy(local_hf_path, filename)
+        try:
+            shutil.copy(local_hf_path, filename)
+        except Exception as e:
+            st.error(f"Failed to copy downloaded model to working dir: {e}")
+            return None
 
     st.success(f"Downloaded {filename}")
     return filename
@@ -180,7 +189,7 @@ except Exception as e:
     st.error(f"Error while ensuring model file: {e}")
 
 if model_local_path is None:
-    st.warning(f"Model `{checkpoint_choice}` not found and download failed. Please check HF_REPO setting.")
+    st.warning(f"Model `{checkpoint_choice}` not found and download failed. Please check HF_REPO and HF_TOKEN settings.")
     st.stop()
 
 # Load model (cached)
