@@ -26,44 +26,42 @@ HF_MODEL_FILES = {
 def _hf_download_with_compat(repo_id, filename, token, cache_dir="hf_cache", force_download=False):
     """
     Call hf_hub_download with a token in a backward/forward compatible way.
-    Tries both 'token=' and 'use_auth_token=' argument names.
+    Returns the path to the downloaded file (in HF cache).
     """
-    # Try token=None first (for public) or with provided token; handle different API versions
     kwargs = dict(repo_id=repo_id, filename=filename, cache_dir=cache_dir, force_download=force_download)
-    # Try the modern 'token' arg first (newer versions)
+    # Try modern 'token' argument first
     try:
         if token is not None:
             return hf_hub_download(**kwargs, token=token)
         else:
             return hf_hub_download(**kwargs)
-    except TypeError as e_token:
-        # try legacy 'use_auth_token' fallback
-        try:
-            if token is not None:
-                return hf_hub_download(**kwargs, use_auth_token=token)
-            else:
-                return hf_hub_download(**kwargs)
-        except Exception as e2:
-            # raise the original / second exception for caller to display
-            raise e2
+    except TypeError:
+        # try legacy 'use_auth_token'
+        if token is not None:
+            return hf_hub_download(**kwargs, use_auth_token=token)
+        else:
+            return hf_hub_download(**kwargs)
 
 def get_model_file_from_hf(filename: str):
     """
-    Ensure `filename` exists locally. If not, download it from the HF repo.
-    Uses st.secrets['HF_TOKEN'] if present (for private/gated repos).
-    Returns local filename or None on failure.
+    Ensure `filename` exists locally OR in HF cache.
+    If present as a local file (cwd), return that path.
+    Otherwise download via hf_hub_download and return the cache path.
+    Returns local path or None on failure.
     """
+    # 1) If file exists in current working directory, use it (allows bundling)
     if os.path.exists(filename):
-        return filename
+        st.info(f"Found local model file: {filename}")
+        return os.path.abspath(filename)
 
+    # 2) If filename is mapped and available, download from HF (returns HF cache path)
     if filename not in HF_MODEL_FILES:
         st.error(f"{filename} is not configured for Hugging Face download.")
         return None
 
     hf_filename = HF_MODEL_FILES[filename]
-    st.info(f"Ensuring model {hf_filename} is available (HF repo: {HF_REPO}) ...")
+    st.info(f"Downloading {hf_filename} from Hugging Face repo {HF_REPO} (if not cached)...")
 
-    # Read token from Streamlit secrets (works on Streamlit Cloud) or None for public repos
     token = st.secrets.get("HF_TOKEN", None)
 
     try:
@@ -78,20 +76,12 @@ def get_model_file_from_hf(filename: str):
         st.error(f"Failed to download {hf_filename} from Hugging Face: {e}")
         return None
 
-    try:
-        # Move HF cache file to working dir with expected filename (atomic replace)
-        os.replace(local_hf_path, filename)
-    except Exception:
-        # Fallback copy if replace fails (cross-device)
-        import shutil
-        try:
-            shutil.copy(local_hf_path, filename)
-        except Exception as e:
-            st.error(f"Failed to copy downloaded model to working dir: {e}")
-            return None
+    if not os.path.exists(local_hf_path):
+        st.error(f"Download reported success but file does not exist at: {local_hf_path}")
+        return None
 
-    st.success(f"Downloaded {filename}")
-    return filename
+    st.success(f"Model available at: {local_hf_path}")
+    return local_hf_path
 
 # ----------------------------
 # Page config and CSS tweaks
@@ -162,12 +152,20 @@ def get_bytes_from_pil(pil_img, fmt="PNG"):
 # ----------------------------
 @st.cache_resource(show_spinner=True)
 def load_model(checkpoint_path: str):
+    """
+    Load model from checkpoint_path. checkpoint_path may be a local filename or HF cache path.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = GeleNet().to(device)
-    state = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state)
-    model.eval()
-    return model, device
+    try:
+        model = GeleNet().to(device)
+        # load weights (map to device)
+        state = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(state)
+        model.eval()
+        return model, device
+    except Exception as e:
+        # Propagate detailed error so UI can show it
+        raise RuntimeError(f"Failed to load model from '{checkpoint_path}': {e}")
 
 # ----------------------------
 # Sidebar (left) - navbar style
@@ -206,7 +204,7 @@ if not uploaded:
     st.info("Upload an image from the left sidebar (Drag and drop supported).")
     st.stop()
 
-# Ensure model file exists locally (download from HF if needed)
+# Ensure model file exists locally (download from HF cache if needed)
 model_local_path = None
 try:
     model_local_path = get_model_file_from_hf(checkpoint_choice)
